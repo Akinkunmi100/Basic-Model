@@ -1,0 +1,500 @@
+---
+title: "Marketing Campaign Prediction"
+output:
+  html_document: default
+    df_print: paged
+    justify: justify
+  pdf_document: default
+date: "2024-05-14"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+###### Load the required libraries
+```{r}
+library(rpart)
+library(rpart.plot)
+library(DBI)
+library(RMySQL)
+library(caret)
+library(pROC)
+library(class)
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+library(cluster)
+library(readr)
+library(corrplot)
+library(factoextra)
+```
+
+
+
+###### Setting the database user
+```{r}
+DBUser <- 'root'          
+UserPassword <- 'harkinkunmsey'
+HostName <- 'localhost'
+DatabaseName <- 'world'
+```
+
+
+###### Extract customer campaign dataset from Mysql
+```{r}
+database_con <- dbConnect(MySQL(), user = DBUser, password = UserPassword, 
+                host = HostName, dbname = DatabaseName, port=3306)
+
+data <- dbGetQuery(database_con, statement = "Select * from world.marketingcampaign")
+
+dbDisconnect(database_con)
+```
+
+
+## Data Preprocessing and cleaning
+###### Get first six rows of the data
+```{r}
+head(data)
+
+```
+
+
+###### data shape
+```{r}
+dim(data)
+```
+
+
+######  summarise  data
+```{r}
+summary(data)
+
+```
+
+###### find missing observation
+```{r}
+sum(is.na(data))
+
+```
+
+
+## Exploratory Data Analysis EDA
+######  Level of Respondent Education Visualization
+```{r}
+ggplot(data, aes(x = Education)) +
+  geom_bar(color = "#006400", fill = "#FFA500")+
+  labs(title = "Education Levels",
+       x = "Education",
+       y = "Frequency")
+```
+
+
+
+###### Marital Status to campaigne Response Visualization
+```{r}
+ggplot(data) + geom_bar(aes(x=MaritalStatus, fill = "Response"), color ="black", width = 0.65)+coord_flip() +
+  theme(axis.text.y=element_text(size=rel(0.8)))
+
+```
+
+
+
+###### Campaign Response visualization
+```{r}
+barplot(table(data$Response),
+        col = c("#1F77B4", "#FF7F0E"), 
+        main = "Response Distribution",  
+        xlab = "Response", 
+        ylab = "Frequency",  
+        names.arg = c("No", "Yes"), 
+        border = "black", 
+        legend.text = c("No", "Yes"),
+        args.legend = list(x = "topright")) 
+```
+
+
+###### percentage of those that responded yes/no
+```{r}
+cbind(frequency = table(data$Response), percent=prop.table(table(data$Response))*100)
+
+```
+
+
+
+###### Corr heatmap
+```{r}
+corr <- cor(data[,sapply(data, is.numeric)])
+corrplot(corr,
+         method = "square",
+         type = "lower",
+         tl.col = "#1F77B4",
+         tl.srt = 47,
+         diag = FALSE,
+         addCoef.col = "black",
+         col = colorRampPalette(c("#FF6347", "white", "#1E90FF"))(100),
+         tl.cex = 0.75,
+         number.cex = 0.6,
+         tl.offset = 0.4,
+         addshade = "positive",
+         title = "Correlation Plot"
+)
+
+
+```
+
+
+
+
+###### Check if there is outlier in income
+```{r}
+boxplot(data$Income)
+```
+
+
+###### Inspect the response class with income outlier
+```{r}
+boxplot(Income ~ Response, data = data)
+```
+
+
+###### Income distribution visual to double check the outlier
+```{r}
+hist(data$Income,
+     main = "Respondent Income Distribution",
+     xlab = "Income",
+     border = "black",
+     col = "#1F77B4",  
+     prob = TRUE,
+     las = 1  
+)
+
+
+
+```
+
+
+
+###### Checking outlier in year of birth
+```{r}
+boxplot(data$Year_Birth)
+
+```
+
+##### Removing outliers for both income and Age
+###### Fixing outlier from the income column
+```{r}
+
+qaunt <- quantile(data$Income, probs = c(0.25, 0.75))
+# using the IQR function
+inter_qt <- IQR(data$Income)
+
+lb <- qaunt[1] - 1.5 * inter_qt
+ub <- qaunt[2] + 1.5 * inter_qt
+
+#create logical vector income_outliers where elements of the vector income are outliers.
+income_outliers <- data$Income < lb | data$Income > ub
+data$Income[income_outliers] <- median(data$Income, na.rm = TRUE)
+
+
+```
+
+
+###### Inspect if the outlier has been removed
+```{r}
+boxplot(data$Income)
+
+```
+###### Remove outliers for BirthYear
+```{r}
+data <- data[data$Year_Birth > 1900, ]
+```
+
+
+
+##  Data Feature Engineering
+###### Convert the levels of the response variable to factor
+```{r}
+data$Response <- ifelse(data$Response == 1, "Yes", "No")
+# then make it a factor variable
+data$Response <- factor(data$Response)
+```
+
+
+
+###### Drop ID Column
+```{r}
+data <- dplyr::select(.data = data, -ID)
+
+
+```
+
+
+# Project Model Building and Prediction
+
+## Model for Decision Tree
+```{r}
+set.seed(123) 
+train_index <- sample(1:nrow(data), 0.7 * nrow(data))
+train_data <- data[train_index, ]
+test_data <- data[-train_index, ]
+
+# Model Fitting
+tree_model <- rpart(Response ~ ., data = train_data, method = "class")
+
+# Model Plot
+rpart.plot(tree_model)
+
+```
+
+
+
+
+#### Model predictions
+```{r}
+predictions <- predict(tree_model, test_data, type = "class")
+accuracy <- mean(predictions == test_data$Response)
+print(paste("Accuracy:", accuracy))
+```
+
+
+#### Decision Tree CF Matrix
+```{r}
+test_y <- test_data$Response
+caret::confusionMatrix(predictions, test_y, positive = "Yes")
+
+```
+
+
+
+
+#### Decision Tree ROC and AUC
+```{r}
+
+set.seed(123)
+tree_Control <- trainControl(method="cv", number=2, classProbs=TRUE,
+                             summaryFunction=twoClassSummary)
+
+treeTrain <- train(Response~., data = train_data, method="rpart", metric="ROC",
+             trControl=tree_Control)
+
+treePred <- predict(treeTrain, newdata = test_data, type="prob")
+
+treePred_probabilities <- treePred[, 2]
+
+treeLabels <- ifelse(test_y == "Yes", 1, 0)
+
+Roc <- roc(treeLabels, treePred_probabilities)
+aucValue <- auc(Roc)
+print(aucValue)
+
+
+```
+
+
+
+
+#### logistic Regression model 
+```{r}
+logit_mod <- glm(Response ~ ., data = train_data, family = "binomial")
+
+```
+
+
+
+
+###### Get exponential of the coeficient for better interpretation
+```{r}
+exp(coef(logit_mod))
+
+```
+
+
+#### Model Predictions
+```{r}
+
+test_data$Probs <- predict(logit_mod, test_data, type = "response")
+test_data$Pred <- ifelse(test_data$Probs > 0.5, "Yes", "No")
+test_data$Pred<- factor(test_data$Pred, levels = c("No", "Yes"))
+
+```
+
+
+
+
+
+#### Logistic Regression Confusion Matrix
+```{r}
+caret::confusionMatrix(test_data$Pred, test_y, positive = "Yes")
+```
+
+
+####  Logistic Regression ROC and AUC
+```{r}
+set.seed(123)
+probabilities <- predict(logit_mod, test_data, type = "response") 
+
+log_roc <- roc(test_y, probabilities)
+auc <- auc(log_roc)
+ggroc(log_roc)
+```
+
+
+
+
+```{r}
+print(paste("AUC:", auc))
+
+```
+
+
+
+
+
+#### Model Preparation for K-Nearest Neigbor(KNN)
+```{r}
+set.seed(123)
+train_indices <- sample(1:nrow(data), 0.8*nrow(data)) 
+train_data <- data[train_indices, ] 
+test_data <- data[-train_indices, ] 
+
+# convert the levels of education and marital status to a dummy variable
+train_data <- data.frame(model.matrix(~ Education + MaritalStatus + 0, data = 
+train_data), train_data) 
+test_data <- data.frame(model.matrix(~ Education + MaritalStatus + 0, data = 
+test_data), test_data) 
+
+# select all clean data
+train_data <- train_data[, -c(which(names(train_data) %in% c("Education", 
+"MaritalStatus")))] 
+test_data <- test_data[, -c(which(names(test_data) %in% c("Education","MaritalStatus")))] 
+num_cols <- c("Year_Birth","Income","Recency","NumWebPurchases","NumStorePurchases","NumWebVisitsMonth") 
+
+# select all clean data
+train_data <- train_data[complete.cases(train_data), ] 
+test_data <- test_data[complete.cases(test_data), ]
+
+# numerical column scaling
+train_data[, num_cols] <- scale(train_data[, num_cols]) 
+test_data[, num_cols] <- scale(test_data[, num_cols]) 
+```
+
+
+
+## Model for K-Nearest Neighbor
+#### KNN Model fitting and Prediction
+```{r}
+set.seed(12)
+Model <- knn(train = train_data[, -which(names(train_data) == "Response")],  
+                 test = test_data[, -which(names(test_data) == "Response")], 
+                 cl = train_data$Response, k = 5)
+
+accuracy <- sum(Model == test_data$Response) / length(test_data$Response)
+print(paste("Accuracy: ", accuracy))
+```
+
+
+
+#### KNN confusion matrix
+```{r}
+confusionMatrix(data = Model, reference = test_data$Response)
+
+```
+
+
+
+#### KNN ROC and AUC
+```{r}
+
+set.seed(123)
+knn_Rocmodel <- train(form = Response ~.,
+                   data = train_data,
+                   method = 'knn') 
+
+knn_predictions <- predict(object = knn_Rocmodel, newdata = test_data, type = "prob") 
+knn_probabilities<- knn_predictions[,2]
+KnnROC <- roc(response = test_data$Response, predictor = knn_probabilities)
+knnAuc <- auc(KnnROC)
+print(knnAuc)
+
+```
+
+
+
+
+## Cluster Analysis
+```{r}
+data_variables <- c("Income", "Recency", "NumWebPurchases", "NumStorePurchases", "NumWebVisitsMonth")
+
+
+# data scaling
+s_data <- scale(data[, data_variables])
+
+#  total within-cluster sum of square (1 to 10) clusters for optimal number of cluster
+WSS <- numeric(10)
+for ( i in 1:10) {
+  WSS[i] <- sum(kmeans(s_data, centers = i)$withinss)
+}
+```
+
+
+
+###### Using the kmeans algorithm to determine relevant number of k
+```{r}
+plot(1:10, WSS, type = "b", xlab = "Number of Clusters", ylab = "cluster Within Sum of Squares")
+```
+
+
+
+```{r}
+KmeansModel <- kmeans(s_data, centers = 3)
+data$cluster <- KmeansModel$cluster
+KmeansModel$centers
+```
+
+
+```{r}
+pca_data <- prcomp(s_data, center = TRUE, scale. = TRUE)
+pca_df <- as.data.frame(pca_data$x[, 1:2])
+pca_df$Cluster <- data$cluster
+ggplot(pca_df, aes(x = PC1, y = PC2, color = as.factor(Cluster))) +
+  geom_point() +
+  scale_color_discrete(name = "Cluster") +
+  labs(x = "PC 1", y = "PC 2") +
+  ggtitle("PCA Cluster Plot ")
+```
+
+
+
+
+###### visual of the kmean cluster
+```{r}
+clusplot(s_data, KmeansModel$cluster, color = TRUE)
+```
+
+
+
+
+###### cluster visualization
+```{r}
+fviz_cluster(KmeansModel, data = s_data)
+
+```
+
+
+
+
+######  cluster Members
+```{r}
+dataDistance <- dist(x = s_data, method = "euclidean")  
+Hc_Data <- hclust(d = dataDistance, method = "complete")  
+cluster_mem = cutree(Hc_Data,3)
+table(cluster_mem)
+
+
+aggregate(s_data,list(cluster_mem),mean)
+
+```
+
